@@ -1152,7 +1152,7 @@ def build_oauth_auth(
     if not _OAUTH_AVAILABLE:
         logger.warning(
             "MCP OAuth requested for '%s' but SDK auth types are not available. "
-            "Install with: pip install 'mcp>=1.26.0'",
+            "Install with: pip install 'mcp>=1.28.1'",
             server_name,
         )
         return None
