@@ -94,6 +94,25 @@ class TestAllowlist:
                 assert ld._spec_is_safe(spec), \
                     f"{feature}: spec {spec!r} fails safety check"
 
+    def test_security_sensitive_lazy_pins_match_current_clean_versions(self):
+        """Lazy installs must not silently reintroduce remediated packages."""
+        expected = {
+            "tool.dashboard": {
+                "starlette==1.3.1",
+                "python-multipart==0.0.32",
+            },
+            "tool.vision": {"Pillow==12.3.0"},
+            "tool.computer_use": {
+                "mcp==1.28.1",
+                "starlette==1.3.1",
+            },
+        }
+        for feature, required_specs in expected.items():
+            assert required_specs <= set(ld.feature_specs(feature)), (
+                f"{feature} is missing current security pins: "
+                f"{required_specs - set(ld.feature_specs(feature))}"
+            )
+
     def test_feature_install_command_returns_pip_invocation(self):
         cmd = ld.feature_install_command("memory.honcho")
         assert cmd is not None

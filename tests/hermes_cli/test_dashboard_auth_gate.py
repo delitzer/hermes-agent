@@ -15,6 +15,25 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 
 
+@pytest.fixture(autouse=True)
+def restore_dashboard_app_state():
+    """Keep start_server tests from leaking host/auth state into later files."""
+    missing = object()
+    previous = {
+        name: getattr(web_server.app.state, name, missing)
+        for name in ("bound_host", "bound_port", "auth_required")
+    }
+    yield
+    for name, value in previous.items():
+        if value is missing:
+            try:
+                delattr(web_server.app.state, name)
+            except AttributeError:
+                pass
+        else:
+            setattr(web_server.app.state, name, value)
+
+
 @pytest.fixture
 def client_loopback():
     # Pin the bound-host state for host_header_middleware so requests with

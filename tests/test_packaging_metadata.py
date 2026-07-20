@@ -156,18 +156,20 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     )
 
 
-# Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
-# 1.0.1. Anything below that lets a malformed Host header desync
-# ``request.url.path`` from the dispatched ASGI path, bypassing path-based
-# authz in middleware/endpoints that gate on ``request.url``. Starlette is a
-# transitive dep (fastapi in [web]; sse-starlette/mcp in [mcp]/[computer-use]/
-# [dev]) so we pin it directly in every extra that exposes a server surface and
-# enforce the floor in both pyproject and the committed lockfile.
-_STARLETTE_CVE_FLOOR = (1, 0, 1)
+# Minimum non-vulnerable floors for the current OSV advisory clusters. These
+# dependencies are direct pins because broad transitive ranges can otherwise
+# reintroduce a known-vulnerable release during install or update.
+_STARLETTE_SECURITY_FLOOR = (1, 3, 1)
+_MCP_SECURITY_FLOOR = (1, 28, 1)
+_CORE_SECURITY_FLOORS = {
+    "cryptography": (48, 0, 1),
+    "pillow": (12, 3, 0),
+    "python-multipart": (0, 0, 31),
+}
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
-    # "1.0.1" -> (1, 0, 1); tolerant of pre/post suffixes by truncating.
+    # "1.3.1" -> (1, 3, 1); tolerant of pre/post suffixes by truncating.
     head = spec.split("+", 1)[0]
     parts = []
     for chunk in head.split("."):
@@ -178,14 +180,26 @@ def _version_tuple(spec: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
-    """Every extra that declares Starlette must pin a patched (>=1.0.1) version.
+def test_core_security_dependencies_are_exact_pinned_above_current_floors():
+    """Core dependency pins must not regress below their advisory fix floors."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    found = {}
+    for spec in data["project"]["dependencies"]:
+        name = spec.split("==", 1)[0].split(">", 1)[0].split("<", 1)[0].split("[", 1)[0].strip().lower()
+        if name in _CORE_SECURITY_FLOORS:
+            assert "==" in spec, f"core dependency {name} must be exact-pinned, got {spec!r}"
+            found[name] = spec.split("==", 1)[1].split(";", 1)[0].strip()
 
-    Regression guard for #35067 / CVE-2026-48710. A future edit that drops the
-    pin (re-exposing the unbounded transitive ``starlette>=0.27`` from mcp /
-    ``>=0.40.0`` from fastapi) or pins a pre-1.0.1 version fails here instead of
-    shipping a Host-header auth-bypass to dashboard / MCP-HTTP users.
-    """
+    assert set(found) == set(_CORE_SECURITY_FLOORS)
+    for name, floor in _CORE_SECURITY_FLOORS.items():
+        assert _version_tuple(found[name]) >= floor, (
+            f"core dependency {name}=={found[name]} is below security floor "
+            f"{'.'.join(map(str, floor))}"
+        )
+
+
+def test_starlette_pinned_above_current_security_floor_in_pyproject():
+    """Every server-surface extra must exact-pin Starlette at 1.3.1 or newer."""
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = data["project"]["optional-dependencies"]
 
@@ -201,43 +215,62 @@ def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
     # The four server-surface extras must each carry the direct pin.
     for extra in ("web", "mcp", "computer-use", "dev"):
         assert extra in found, (
-            f"[{extra}] no longer pins starlette directly — CVE-2026-48710 "
-            f"regression risk (mcp/fastapi pull it transitively with no upper bound)"
+            f"[{extra}] no longer pins starlette directly; mcp/fastapi pull it "
+            "transitively with no security floor"
         )
 
     for extra, ver in found.items():
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
-            f"[{extra}] pins starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))}"
+        assert _version_tuple(ver) >= _STARLETTE_SECURITY_FLOOR, (
+            f"[{extra}] pins starlette=={ver}, below security floor "
+            f"{'.'.join(map(str, _STARLETTE_SECURITY_FLOOR))}"
         )
 
 
-def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
-    """The committed uv.lock must resolve starlette to a patched version.
+def test_mcp_pinned_above_current_security_floor_in_pyproject():
+    """Every MCP-bearing extra must exact-pin the authorization-fixed SDK."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    found = {}
+    for extra, specs in extras.items():
+        for spec in specs:
+            name = spec.split("==", 1)[0].split(">", 1)[0].split("<", 1)[0].split("[", 1)[0].strip()
+            if name.lower() == "mcp":
+                assert "==" in spec, f"[{extra}] must exact-pin mcp, got {spec!r}"
+                found[extra] = spec.split("==", 1)[1].split(";", 1)[0].strip()
 
-    pyproject pins protect the declared extras, but the lockfile is what
-    hash-verified installs (``uv sync --locked``) actually pull. Assert the
-    resolved version is >= the CVE-2026-48710 fix floor so a stale-lock
-    regression can't ship a vulnerable Starlette to users.
-    """
+    for extra in ("mcp", "computer-use", "dev"):
+        assert extra in found, f"[{extra}] no longer pins mcp directly"
+    for extra, ver in found.items():
+        assert _version_tuple(ver) >= _MCP_SECURITY_FLOOR, (
+            f"[{extra}] pins mcp=={ver}, below security floor "
+            f"{'.'.join(map(str, _MCP_SECURITY_FLOOR))}"
+        )
+
+
+def test_locked_security_dependencies_are_not_below_current_floors():
+    """The committed uv.lock must retain every current dependency fix floor."""
+    floors = {
+        **_CORE_SECURITY_FLOORS,
+        "mcp": _MCP_SECURITY_FLOOR,
+        "starlette": _STARLETTE_SECURITY_FLOOR,
+    }
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
-    versions = []
-    in_starlette = False
+    found = {}
+    current_name = None
     for line in lock.splitlines():
         if line.startswith("[[package]]"):
-            in_starlette = False
-        elif line.strip() == 'name = "starlette"':
-            in_starlette = True
-        elif in_starlette and line.startswith("version = "):
-            versions.append(line.split("=", 1)[1].strip().strip('"'))
-            in_starlette = False
+            current_name = None
+        elif line.startswith('name = "'):
+            current_name = line.split('"', 2)[1].lower()
+        elif current_name in floors and line.startswith("version = "):
+            found[current_name] = line.split("=", 1)[1].strip().strip('"')
+            current_name = None
 
-    assert versions, "starlette not found in uv.lock"
-    for ver in versions:
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
-            f"uv.lock resolves starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
-            f"lockfile after bumping the pin"
+    assert set(found) == set(floors), f"missing security-pinned packages in uv.lock: {set(floors) - set(found)}"
+    for name, floor in floors.items():
+        assert _version_tuple(found[name]) >= floor, (
+            f"uv.lock resolves {name}=={found[name]}, below security floor "
+            f"{'.'.join(map(str, floor))}; regenerate the lockfile after bumping the pin"
         )
 
 
