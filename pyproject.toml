@@ -43,6 +43,10 @@ dependencies = [
   "fire==0.7.1",
   "httpx[socks]==0.28.1",
   "rich==14.3.3",
+  # Direct security pins for transitive CLI/rendering dependencies. Keep these
+  # explicit so a stale lock cannot silently reintroduce known vulnerabilities.
+  "click==8.3.3",  # PYSEC-2026-2132
+  "Pygments==2.20.0",  # GHSA-5239-wwwm-4pmq / PYSEC-2026-2987
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
@@ -84,7 +88,7 @@ dependencies = [
   "urllib3>=2.7.0,<3",
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
+  "cryptography==48.0.1",  # GHSA-537c-gmf6-5ccf
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -108,7 +112,7 @@ dependencies = [
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
   # without an explicit dependency here (and in the `web` extra below).
-  "python-multipart>=0.0.9,<1",
+  "python-multipart==0.0.31",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
   # Desktop SSH's Windows remote runtime (hermes_cli/windows_ssh_runtime.py)
@@ -122,7 +126,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -156,7 +160,7 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "pydantic-settings==2.14.2", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # mcp/starlette/pydantic-settings: 2026 security patches; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
@@ -194,14 +198,13 @@ vision = []
 # any existing requests for the `pty` extra resolve cleanly
 # without pulling in extra packages.
 pty = []
-# CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
-# sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
-# 1.0.1, a malformed Host header makes `request.url.path` desync from the path
-# the ASGI router actually dispatched, so middleware/endpoints that gate on
-# `request.url` can be bypassed. We pin a patched Starlette directly in every
-# extra that exposes a Starlette-backed server surface so pip/uv can't resolve
-# a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+# Starlette is pulled transitively by mcp's sse-starlette / HTTP-SSE stack
+# (and by fastapi in the `web` extra). Pin the audit-clean 1.3.1 release in
+# every Starlette-backed server extra to cover BadHost plus the later 2026
+# request/form advisories. pydantic-settings 2.14.2 fixes
+# GHSA-4xgf-cpjx-pc3j in MCP-backed configuration loading. Keep these pins in
+# lockstep with uv.lock and the lazy computer-use declaration.
+mcp = ["mcp==1.28.1", "starlette==1.3.1", "pydantic-settings==2.14.2"]
 nemo-relay = ["nemo-relay>=0.5,<1.0"]
 homeassistant = ["aiohttp==3.14.1"]
 sms = ["aiohttp==3.14.1"]
@@ -210,7 +213,7 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1:
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==1.28.1", "starlette==1.3.1", "pydantic-settings==2.14.2"]
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -263,10 +266,11 @@ youtube = [
   # at first invocation with ModuleNotFoundError (issue #22243).
   "youtube-transcript-api==1.2.4",
 ]
-# `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
-# starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
-# transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
+# `hermes dashboard` (localhost SPA + API). Not in core to keep the default install lean.
+# Starlette 1.3.1 and python-multipart 0.0.31 are direct security pins for
+# FastAPI's transitive server and multipart parser surfaces; keep them in
+# lockstep with the MCP/web declarations and uv.lock.
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1", "python-multipart==0.0.31"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
