@@ -2453,7 +2453,7 @@ DEFAULT_CONFIG = {
         "presets": {
             "default": {
                 "reference_models": [
-                    {"provider": "openai-codex", "model": "gpt-5.5"},
+                    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},

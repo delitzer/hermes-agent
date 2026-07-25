@@ -79,7 +79,7 @@ moa:
     default:
       reference_models:
         - provider: openai-codex
-          model: gpt-5.5
+          model: gpt-5.6-sol
         - provider: openrouter
           model: deepseek/deepseek-v4-pro
       aggregator:
