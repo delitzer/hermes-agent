@@ -9,8 +9,9 @@ was silently dropped for every custom endpoint.
 These tests pin the wire-shape contract:
   - disabled            → extra_body.think = False
   - enabled + effort    → top-level reasoning_effort (native OpenAI-compat
-                          format GLM/ARK expect), passed through verbatim
-                          including ``max``/``xhigh``
+                          format GLM/ARK expect); pass through native
+                          custom levels like ``max`` and normalize Hermes'
+                          ``xhigh`` alias to ``max`` for local fallbacks
   - enabled + no effort → nothing emitted (endpoint's server default applies)
   - ollama_num_ctx      → extra_body.options.num_ctx, orthogonal to reasoning
 """
@@ -71,19 +72,29 @@ class TestCustomReasoningWireShape:
         assert tl == {"reasoning_effort": "none"}
 
     @pytest.mark.parametrize(
-        "effort", ["minimal", "low", "medium", "high", "xhigh", "max"]
+        "effort", ["minimal", "low", "medium", "high", "max"]
     )
     def test_enabled_effort_goes_top_level(self, custom_profile, effort):
-        """enabled + effort → TOP-LEVEL reasoning_effort, passed through verbatim.
-
-        GLM-5.2/ARK and OpenAI-compatible reasoning APIs read reasoning_effort
-        as a top-level string, not nested in extra_body. ``max`` is GLM's
-        native deep-reasoning level and must survive.
-        """
+        """enabled + native custom effort → TOP-LEVEL reasoning_effort."""
         eb, tl = custom_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}, model="glm-5.2"
         )
         assert tl == {"reasoning_effort": effort}
+        assert "reasoning_effort" not in eb
+        assert "think" not in eb
+
+    def test_xhigh_effort_maps_to_max(self, custom_profile):
+        """Hermes xhigh alias → custom/Ollama-compatible max.
+
+        OpenAI Codex accepts ``xhigh``; local custom fallbacks such as
+        Ollama's OpenAI-compatible endpoint reject it and accept ``max``.
+        The fallback should preserve strongest-effort intent without 400ing.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            model="qwen3.6:35b",
+        )
+        assert tl == {"reasoning_effort": "max"}
         assert "reasoning_effort" not in eb
         assert "think" not in eb
 

@@ -9,7 +9,8 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
     + extra_body.think = False for /api/chat and proxies
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
-    so the endpoint's server default applies)
+    so the endpoint's server default applies). Hermes' ``xhigh`` alias is
+    normalized to custom-endpoint ``max`` so local fallbacks do not 400.
 """
 
 from typing import Any
@@ -44,6 +45,9 @@ class CustomProfile(ProviderProfile):
         #   - enabled + effort set → TOP-LEVEL reasoning_effort string, the
         #     format GLM-5.2/ARK and other OpenAI-compatible reasoning APIs
         #     expect (GLM documents "high" and "max"; "max" is its default).
+        #     Hermes exposes ``xhigh`` for providers that use that spelling;
+        #     local/custom OpenAI-compatible endpoints in this profile reject
+        #     it and use ``max`` for the same strongest-effort intent.
         #   - enabled + no effort  → omit both, so the endpoint applies its own
         #     server-side default (do NOT force a level the user didn't pick).
         #
@@ -64,6 +68,8 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
             elif _effort:
+                if _effort == "xhigh":
+                    _effort = "max"
                 top_level["reasoning_effort"] = _effort
 
         return extra_body, top_level
