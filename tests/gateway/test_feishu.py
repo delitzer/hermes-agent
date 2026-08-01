@@ -18,7 +18,9 @@ from gateway.platforms.base import ProcessingOutcome
 try:
     import lark_oapi
     _HAS_LARK_OAPI = True
-except ImportError:
+# AttributeError: lark-oapi 1.6.8 + setuptools >= 81 (pkg_resources namespace
+# declaration removed) — the SDK is installed but unusable; skip like absent.
+except (ImportError, AttributeError):
     _HAS_LARK_OAPI = False
 
 
@@ -1608,6 +1610,69 @@ class TestWebhookSecurity(unittest.TestCase):
         )
         self.assertEqual(adapter._verification_token, "token_from_extra")
         self.assertEqual(adapter._encrypt_key, "encrypt_from_extra")
+
+
+class TestWebhookDeliveryBucketAuthOrdering(unittest.TestCase):
+    """Regression tests for GHSA-pmqc-57g8-c22c (bucket charged before auth).
+
+    Deliberately NOT guarded by _HAS_LARK_OAPI: _handle_webhook_request uses
+    only aiohttp and stdlib, and the vulnerable ordering must stay pinned even
+    on hosts where the lark SDK is missing or unusable.
+    """
+
+    @staticmethod
+    def _webhook_request(payload: dict, remote: str = "198.51.100.7") -> SimpleNamespace:
+        body = json.dumps(payload).encode("utf-8")
+        return SimpleNamespace(
+            remote=remote,
+            content_length=None,
+            headers={},
+            content=_FakeRequestContent(body),
+        )
+
+    @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
+    def test_unauthenticated_requests_do_not_consume_delivery_bucket(self):
+        """The per-IP delivery bucket must be charged only after
+        verification-token/signature authentication.
+
+        Previously the bucket was charged before auth, so unauthenticated
+        garbage from a shared remote address (reverse proxy / tunnel) could
+        exhaust the bucket and starve legitimate Feishu deliveries with 429s.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with patch("plugins.platforms.feishu.adapter._FEISHU_WEBHOOK_RATE_LIMIT_MAX", 3):
+            # Far more unauthenticated requests than the delivery bucket holds.
+            for _ in range(10):
+                response = asyncio.run(adapter._handle_webhook_request(
+                    self._webhook_request({"header": {"token": "wrong-token"}})
+                ))
+                self.assertEqual(response.status, 401)
+            # Unauthenticated traffic must not have charged the bucket at all.
+            self.assertEqual(adapter._webhook_rate_counts, {})
+            # A legitimate authenticated delivery from the same remote address
+            # still goes through.
+            response = asyncio.run(adapter._handle_webhook_request(
+                self._webhook_request({"header": {"token": "expected-token", "event_type": ""}})
+            ))
+            self.assertEqual(response.status, 200)
+
+    @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
+    def test_authenticated_flood_is_still_rate_limited(self):
+        """Authenticated retry storms must still hit the delivery bucket."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = {"header": {"token": "expected-token", "event_type": ""}}
+        with patch("plugins.platforms.feishu.adapter._FEISHU_WEBHOOK_RATE_LIMIT_MAX", 3):
+            for _ in range(3):
+                response = asyncio.run(adapter._handle_webhook_request(self._webhook_request(payload)))
+                self.assertEqual(response.status, 200)
+            response = asyncio.run(adapter._handle_webhook_request(self._webhook_request(payload)))
+            self.assertEqual(response.status, 429)
 
 
 class TestDedupTTL(unittest.TestCase):

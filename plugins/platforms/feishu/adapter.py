@@ -115,7 +115,10 @@ try:
     from lark_oapi.ws import Client as FeishuWSClient
 
     FEISHU_AVAILABLE = True
-except ImportError:
+# AttributeError: lark-oapi 1.6.8 declares vendored namespace packages via
+# pkg_resources.declare_namespace, which setuptools >= 81 removed — treat that
+# exactly like the SDK being absent instead of crashing every module import.
+except (ImportError, AttributeError):
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
@@ -3509,12 +3512,14 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")
 
-        # Rate limiting — composite key: app_id:path:remote_ip (matches openclaw key structure).
-        rate_key = f"{self._app_id}:{self._webhook_path}:{remote_ip}"
-        if not self._check_webhook_rate_limit(rate_key):
-            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
-            self._record_webhook_anomaly(remote_ip, "429")
-            return web.Response(status=429, text="Too Many Requests")
+        # The per-IP delivery bucket is charged only AFTER the request passes
+        # verification-token/signature authentication below (GHSA-pmqc-57g8-c22c).
+        # Charging it here let unauthenticated garbage consume the bucket that
+        # legitimate Feishu deliveries share whenever several callers present the
+        # same remote address (reverse proxy / tunnel deployments), starving real
+        # traffic with 429s. Pre-auth cost stays bounded by the Content-Type,
+        # body-size, and read-timeout guards; the generic webhook platform
+        # (gateway/platforms/webhook.py) applies the same auth-then-charge order.
 
         # Content-Type guard — Feishu always sends application/json.
         headers = getattr(request, "headers", {}) or {}
@@ -3582,6 +3587,14 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
             self._record_webhook_anomaly(remote_ip, "401-sig")
             return web.Response(status=401, text="Invalid signature")
+
+        # Rate limiting — charged only for authenticated requests; composite
+        # key: app_id:path:remote_ip (matches openclaw key structure).
+        rate_key = f"{self._app_id}:{self._webhook_path}:{remote_ip}"
+        if not self._check_webhook_rate_limit(rate_key):
+            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
+            self._record_webhook_anomaly(remote_ip, "429")
+            return web.Response(status=429, text="Too Many Requests")
 
         if payload.get("encrypt"):
             logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
