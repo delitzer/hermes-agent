@@ -31,7 +31,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def flush_pending_to_file(
     pending: Dict[str, Any],
     *,
     reason: str = "shutdown",
+    resolve_session_id: Optional[Callable[[str], Optional[str]]] = None,
 ) -> int:
     """Serialise non-empty ``_pending_messages`` slots to disk.
 
@@ -93,6 +94,14 @@ def flush_pending_to_file(
         ``MessageEvent`` objects (adapter) or plain strings (runner).
     reason:
         Logged context (``shutdown``, ``restart``, etc.).
+    resolve_session_id:
+        Optional callable mapping a gateway routing ``session_key`` to the
+        persisted ``session_id`` (e.g. ``SessionStore.peek_session_id``).
+        The session_id MUST be resolved here at flush time:
+        ``recover_pending_to_db`` runs before routing state is available
+        and cannot map a session_key back to a session_id.  Resolver
+        failures are swallowed — the payload is still written without a
+        session_id so the text survives for manual recovery.
 
     Returns
     -------
@@ -113,6 +122,13 @@ def flush_pending_to_file(
             serialised = _serialise_value(value)
             if serialised is None:
                 continue
+            if resolve_session_id is not None and not serialised.get("session_id"):
+                try:
+                    resolved = resolve_session_id(session_key)
+                except Exception:
+                    resolved = None
+                if resolved:
+                    serialised["session_id"] = str(resolved)
             _write_payload(
                 flush_dir,
                 {
@@ -142,10 +158,25 @@ def _serialise_value(value: Any) -> Optional[dict]:
     # MessageEvent objects have a .text attribute and other fields
     if hasattr(value, "text"):
         result: Dict[str, Any] = {"text": getattr(value, "text", "")}
-        # Preserve additional fields if present
-        for attr in ("session_id", "platform", "sender_id", "sender_name",
-                      "reply_to", "media", "raw_event"):
-            val = getattr(value, attr, None)
+        # Platform and sender identity live on the nested SessionSource
+        # (``event.source``), not on the MessageEvent itself.
+        source = getattr(value, "source", None)
+        platform = getattr(source, "platform", None)
+        extras = {
+            # Platform is an Enum; fall back to the raw value for
+            # non-enum stand-ins.
+            "platform": getattr(platform, "value", platform),
+            "sender_id": getattr(source, "user_id", None),
+            "sender_name": getattr(source, "user_name", None),
+            "message_id": getattr(value, "message_id", None),
+            "reply_to_message_id": getattr(value, "reply_to_message_id", None),
+            "reply_to_text": getattr(value, "reply_to_text", None),
+            "reply_to_author_id": getattr(value, "reply_to_author_id", None),
+            "reply_to_author_name": getattr(value, "reply_to_author_name", None),
+            "media_urls": getattr(value, "media_urls", None) or None,
+            "media_types": getattr(value, "media_types", None) or None,
+        }
+        for attr, val in extras.items():
             if val is not None:
                 try:
                     json.dumps(val)

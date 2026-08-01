@@ -6534,7 +6534,23 @@ class BasePlatformAdapter(ABC):
         # Flush pending messages to disk before clearing (#72680).
         try:
             from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+
+            def _peek_session_id(key: str) -> Optional[str]:
+                # Recovery can't map session_key -> session_id on its own,
+                # so resolve it now — but never let a broken/unset session
+                # store block the shutdown flush.
+                try:
+                    store = getattr(self, "_session_store", None)
+                    peek = getattr(store, "peek_session_id", None)
+                    return peek(key) if callable(peek) else None
+                except Exception:
+                    return None
+
+            flush_pending_to_file(
+                self._pending_messages,
+                reason="adapter_shutdown",
+                resolve_session_id=_peek_session_id,
+            )
         except Exception:
             pass
         self._pending_messages.clear()
