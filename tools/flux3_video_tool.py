@@ -516,6 +516,36 @@ def _free_path(candidate):
     raise ValueError(f"could not find a free filename next to {candidate}")
 
 
+def _save_to_denial(save_to) -> Optional[str]:
+    """Why a requested destination is refused, or None to proceed.
+
+    ``save_to`` is model-controlled and the write happens in-process on the
+    host, outside the terminal backend's approval flow, so it gets the same
+    guard as the TTS ``output_path``: no ``..`` traversal, and nothing the
+    shared write denylist protects (credential stores, or anything outside
+    HERMES_WRITE_SAFE_ROOT when that is set).
+    """
+    if not isinstance(save_to, str) or not save_to.strip():
+        return None
+    from pathlib import Path
+
+    from agent.file_safety import is_write_denied
+    from tools.path_security import has_traversal_component
+
+    if has_traversal_component(save_to):
+        return (
+            f"save_to contains a '..' traversal component: {_display_path(save_to)}. "
+            "Use an absolute path or one relative to the current directory without '..'."
+        )
+    requested = Path(save_to.strip()).expanduser()
+    if is_write_denied(str(requested)):
+        return (
+            f"save_to targets a protected credential or system path: "
+            f"{_display_path(str(requested))}. Choose a normal video output location."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -584,6 +614,11 @@ async def _handle_get_result(args: dict, **kwargs) -> str:
 
     url = f"{endpoints['base_url']}/generations/{quote(job_id.strip(), safe='')}"
     save_to = (args or {}).get("save_to")
+    denial = _save_to_denial(save_to)
+    if denial is not None:
+        # Refused before the poll, so no budget is spent and the job is
+        # untouched: the model retries with a normal destination.
+        return _error(denial)
 
     raw = await _call_gateway("GET", url)
     if _poll_is_finished(raw):
