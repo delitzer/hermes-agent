@@ -32,7 +32,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+# v2: results carry `ignored_paths` (ignore-file exclusions). The bump
+# invalidates v1 scan-cache entries, which never recorded exclusions and
+# would otherwise restore as silently-incomplete results.
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -92,6 +95,11 @@ class ScanResult:
     scanned_at: str = ""
     summary: str = ""
     scan_provenance: dict = field(default_factory=dict)
+    # Relative paths shipped in the bundle but excluded from scanning by the
+    # skill's own ignore file. Never affects the verdict, but must always be
+    # disclosed to the operator (see format_scan_report) — the verdict does
+    # not cover these files.
+    ignored_paths: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +652,10 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     that are not part of the installed skill (e.g. `SKILL-original.md`,
     `docs/plans/`, `release-notes.md`) don't trip findings. The ignore
     file itself is always excluded. Patterns cannot un-ignore the
-    skill's own `SKILL.md`, which is always scanned.
+    skill's own `SKILL.md`, which is always scanned. Every path excluded
+    this way is recorded in ``ScanResult.ignored_paths`` and surfaced by
+    ``format_scan_report`` — exclusion silences findings, never the
+    disclosure that unscanned files ship with the bundle.
 
     Args:
         skill_path: Path to the skill directory (must contain SKILL.md)
@@ -657,6 +668,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     trust_level = _resolve_trust_level(source)
 
     all_findings: List[Finding] = []
+    ignored_paths: List[str] = []
 
     if skill_path.is_dir():
         ignore = _load_skill_ignore(skill_path)
@@ -664,12 +676,17 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         # Structural checks first (honoring the ignore list)
         all_findings.extend(_check_structure(skill_path, ignore=ignore))
 
-        # Pattern scanning on each file
+        # Pattern scanning on each file. Excluded files still ship to the
+        # user's machine, so record them for disclosure — the report must
+        # never present an unscanned payload as reviewed.
         for f in skill_path.rglob("*"):
+            if not f.is_file() and not f.is_symlink():
+                continue
+            rel = str(f.relative_to(skill_path))
+            if ignore(rel):
+                ignored_paths.append(rel)
+                continue
             if f.is_file():
-                rel = str(f.relative_to(skill_path))
-                if ignore(rel):
-                    continue
                 all_findings.extend(scan_file(f, rel))
     elif skill_path.is_file():
         all_findings.extend(scan_file(skill_path, skill_path.name))
@@ -685,6 +702,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         findings=all_findings,
         scanned_at=datetime.now(timezone.utc).isoformat(),
         summary=summary,
+        ignored_paths=sorted(ignored_paths),
     )
 
 
@@ -739,6 +757,7 @@ def scan_skill_cached(
             trust_level=cached["trust_level"], verdict=cached["verdict"],
             findings=[Finding(**item) for item in cached.get("findings", [])],
             scanned_at=cached["scanned_at"], summary=cached.get("summary", ""),
+            ignored_paths=list(cached.get("ignored_paths", [])),
         )
         provenance = dict(cached)
         provenance["fresh"] = False
@@ -751,6 +770,7 @@ def scan_skill_cached(
         "source": source, "source_url": source_url, "bundle_hash": bundle_hash,
         "scanner_version": SCANNER_VERSION, "verdict": result.verdict,
         "trust_level": result.trust_level, "findings": findings,
+        "ignored_paths": list(result.ignored_paths),
         "rules": sorted({item["pattern_id"] for item in findings}),
         "scanned_at": result.scanned_at, "summary": result.summary, "fresh": True,
     }
@@ -829,6 +849,16 @@ def format_scan_report(result: ScanResult) -> str:
             loc = f"{f.file}:{f.line}".ljust(30)
             lines.append(f"  {sev} {cat} {loc} \"{f.match[:60]}\"")
 
+        lines.append("")
+
+    if result.ignored_paths:
+        lines.append(
+            f"  !! EXCLUDED FROM SCAN — {len(result.ignored_paths)} file(s) "
+            "shipped but NOT reviewed (skill's own ignore file):"
+        )
+        for path in result.ignored_paths:
+            lines.append(f"  !!   {path}")
+        lines.append("  !! The verdict above does NOT cover these files.")
         lines.append("")
 
     allowed, reason = should_allow_install(result)

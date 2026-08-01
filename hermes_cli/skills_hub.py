@@ -705,6 +705,11 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if metadata_lines:
             c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
+    # Show the full shipped file list BEFORE asking for confirmation — the
+    # scan report enumerates findings, not files, and ignore-file exclusions
+    # mean a clean verdict does not cover every shipped file.
+    c.print(f"[bold]Files ({len(bundle.files)}):[/] {', '.join(bundle.files.keys())}")
+
     # Confirm with user — show appropriate warning based on source
     # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
     if not force and not skip_confirm:
@@ -749,8 +754,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, "invalid_path", str(exc))
         return
     from tools.skills_hub import SKILLS_DIR
-    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
-    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}\n")
 
     # Blueprint detection: if the installed skill declares a
     # metadata.hermes.blueprint block, it is a runnable automation. Register it as
