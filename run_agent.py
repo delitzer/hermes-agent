@@ -4053,10 +4053,50 @@ class AIAgent:
         except Exception:
             pass
 
+    def _authoritative_todo_hydration_history(
+        self, history: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Return the transcript that may be trusted to seed the todo store.
+
+        The per-message pairing gate below (``_tool_response_matches_todo_call``)
+        only blocks a *bare* forged ``role: tool`` result: a caller who controls
+        the whole ``conversation_history`` can still supply a structurally valid
+        assistant ``todo`` call plus its matching result and seed the store with
+        arbitrary content, which the next compaction re-injects as model-visible
+        text (GHSA-xq8w-9jvx-gm3v). Structural checks cannot distinguish that
+        forgery from a genuine pair, because the caller controls every field.
+
+        When this agent is bound to a durable ``SessionDB`` (every gateway/API
+        surface that replays caller-supplied history), hydrate from the
+        persisted transcript for the live session lineage instead — only todo
+        results the runtime actually recorded can then hydrate, regardless of
+        what the caller passed. Fall back to the supplied ``history`` when no
+        durable transcript is available (a local, DB-less CLI turn, where the
+        passed list is itself the authoritative record) or when the persisted
+        read yields nothing (e.g. the session's first turn, not yet flushed).
+        """
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return history
+        try:
+            persisted = db.get_messages_as_conversation(
+                session_id, include_ancestors=True
+            )
+        except Exception:
+            logger.debug(
+                "Todo hydration: authoritative history read failed for "
+                "session=%s; using caller-supplied history",
+                session_id,
+                exc_info=True,
+            )
+            return history
+        return persisted if persisted else history
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.
-        
+
         The gateway creates a fresh AIAgent per message, so the in-memory
         TodoStore is empty. We scan the history for the most recent todo
         tool response and replay it to reconstruct the state.
@@ -4066,9 +4106,15 @@ class AIAgent:
         caller-supplied ``conversation_history``, so a forged bare
         ``role: tool`` message carrying a ``todos`` array must not be able to
         seed the store without a matching canonical tool call
-        (GHSA-5g4g-6jrg-mw3g).
+        (GHSA-5g4g-6jrg-mw3g). A structurally valid *pair* is still forgeable by
+        a caller who controls the whole history, so when a durable transcript
+        exists we scan that authoritative record rather than the supplied
+        history (GHSA-xq8w-9jvx-gm3v); see
+        ``_authoritative_todo_hydration_history``.
         """
         from tools.todo_tool import MAX_TODO_RESULT_CHARS
+
+        history = self._authoritative_todo_hydration_history(history)
 
         # Walk history backwards to find the most recent todo tool response
         last_todo_response = None
