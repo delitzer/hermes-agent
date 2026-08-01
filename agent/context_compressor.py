@@ -4122,9 +4122,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         """Return True for summary handoff messages by metadata or content."""
         if not isinstance(message, dict):
             return False
-        return cls._has_compressed_summary_metadata(
-            message
-        ) or cls._is_context_summary_content(message.get("content"))
+        if cls._has_compressed_summary_metadata(message):
+            return True
+        # Content-prefix matching is the fallback for rows written before the
+        # metadata key existed, so it must not reach roles the compressor never
+        # writes a summary as (``summary_role`` is only ever user/assistant).
+        # A tool result is attacker-reachable bytes: one echoing SUMMARY_PREFIX
+        # would otherwise be adopted as the newest handoff, promoted into
+        # ``_previous_summary``, and injected under ``PREVIOUS SUMMARY:`` —
+        # outside the tool-output fence, under "PRESERVE all existing
+        # information" — laundering it into every later summary. Its removal
+        # from the rebuilt transcript would also orphan the parent tool_call.
+        if message.get("role") not in ("user", "assistant"):
+            return False
+        return cls._is_context_summary_content(message.get("content"))
 
     @classmethod
     def _is_blank_user_turn(cls, message: Any) -> bool:
