@@ -303,6 +303,11 @@ class DingTalkAdapter(BasePlatformAdapter):
                     self.name,
                     self._card_template_id,
                 )
+            elif self._card_template_id:
+                logger.warning(
+                    "[%s] AI Card SDK unavailable; continuing with session-webhook replies",
+                    self.name,
+                )
             elif CARD_SDK_AVAILABLE:
                 # Initialize robot SDK even without card template (for media download)
                 sdk_config = open_api_models.Config()
