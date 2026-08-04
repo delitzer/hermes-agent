@@ -84,7 +84,8 @@ dependencies = [
   "urllib3>=2.7.0,<3",
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==48.0.1",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; ==48.0.1 (not 49.x): msal and alibabacloud-tea-openapi cap <49, hindsight-api-slim needs >=48.0.1
+  # 50.0.0 is the first release fixing all three 2026-07-31 advisories below.
+  "cryptography==50.0.0",  # GHSA-g6cj-pr64-35w5 / GHSA-jwv3-5hgf-82ww / GHSA-m2h6-j472-rp4c
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -174,7 +175,7 @@ modal = ["modal==1.3.4", "aiohttp==3.14.3"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # pytest: GHSA-6w46-j5rx-g56g; starlette: CVE-2026-48710; setuptools: GHSA-h35f-9h28-mq5c; setuptools 83 for torch >=2.13
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: GHSA-cq5v-8q36-5273 / GHSA-mfx4-hv73-q22v / GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
@@ -245,7 +246,7 @@ mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 nemo-relay = []
 homeassistant = ["aiohttp==3.14.3"]
 sms = ["aiohttp==3.14.3"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]  # GHSA-cq5v-8q36-5273 / GHSA-mfx4-hv73-q22v / GHSA-mq44-7p77-q5h7
+teams = ["microsoft-teams-apps==2.0.13.4", "msal==1.37.0", "aiohttp==3.14.3"]  # msal 1.36 caps cryptography<49; aiohttp: GHSA-cq5v-8q36-5273 / GHSA-mfx4-hv73-q22v / GHSA-mq44-7p77-q5h7
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
@@ -267,8 +268,8 @@ mistral = ["mistralai==2.4.8"]
 # NOT in [all].
 otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
 bedrock = ["boto3==1.42.89"]
-vertex = ["google-auth==2.55.1"]
-azure-identity = ["azure-identity==1.25.3"]
+vertex = ["google-auth==2.55.1", "pyasn1==0.6.4"]  # pyasn1: GHSA-8ppf-4f7h-5ppj / GHSA-hm4w-wwcw-mr6r / GHSA-m4p7-r5rc-7g4j
+azure-identity = ["azure-identity==1.25.3", "msal==1.37.0"]  # msal 1.36 caps cryptography<49
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.6",
@@ -290,7 +291,14 @@ termux-all = [
   "hermes-agent[web]",
   "hermes-agent[pty]",
 ]
-dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2", "aiohttp==3.14.3"]
+dingtalk = [
+  # The optional Alibaba AI Card SDK is deliberately omitted: its latest
+  # alibabacloud-tea-openapi dependency caps cryptography<49, while Hermes
+  # requires 50.0.0 for three security fixes. Stream/webhook replies remain.
+  "dingtalk-stream==0.24.3",
+  "qrcode==7.4.2",
+  "aiohttp==3.14.3",
+]
 feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
@@ -304,7 +312,8 @@ google = [
   # The Google SDKs permit older vulnerable transitives, so unlocked installs
   # must carry the same fixed floors as uv.lock and the runtime installers:
   # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
-  # pyasn1 0.6.4, google-auth 2.55.1.
+  # pyasn1 0.6.4 (GHSA-8ppf-4f7h-5ppj / GHSA-hm4w-wwcw-mr6r /
+  # GHSA-m4p7-r5rc-7g4j), google-auth 2.55.1.
   "httplib2==0.32.0",
   "pyasn1==0.6.4",
 ]
@@ -354,7 +363,7 @@ all = [
 ]
 
 [build-system]
-requires = ["setuptools==83.0.0"]
+requires = ["setuptools==83.0.0"]  # GHSA-h35f-9h28-mq5c
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -371,7 +380,10 @@ override-dependencies = [
   "pynacl>=1.6,<1.7",
 ]
 exclude-newer = "14 days"
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false }
+# Bounded security exception: cryptography 50.0.0 was published 2026-07-31,
+# after the moving 14-day cutoff, and is the reviewed fixed release for the
+# exact 48.0.1 -> 50.0.0 transition. Keep the cutoff just past that release.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, cryptography = "2026-08-01T00:00:00Z" }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

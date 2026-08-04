@@ -106,13 +106,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # google-auth is NOT in [all] so plain installs don't carry it.
     "provider.vertex": (
         "google-auth==2.55.1",
-        "pyasn1==0.6.4",
+        "pyasn1==0.6.4",  # GHSA-8ppf-4f7h-5ppj / GHSA-hm4w-wwcw-mr6r / GHSA-m4p7-r5rc-7g4j
     ),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
     # users never pay this import.
-    "provider.azure_identity": ("azure-identity==1.25.3",),
+    "provider.azure_identity": (
+        "azure-identity==1.25.3",
+        "msal==1.37.0",  # 1.36 caps cryptography<49
+    ),
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),
@@ -235,9 +238,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # satisfies both — pin the patched floor here too, like platform.discord.
         "aiohttp==3.14.3",  # GHSA-cq5v-8q36-5273 / GHSA-mfx4-hv73-q22v / GHSA-mq44-7p77-q5h7
     ),
+    # AI Card SDK omitted while alibabacloud-tea-openapi caps cryptography<49.
+    # The adapter degrades to the dingtalk-stream webhook reply path.
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
-        "alibabacloud-dingtalk==2.2.42",
         "qrcode==7.4.2",
         # dingtalk-stream accepts aiohttp>=3.10, including vulnerable versions.
         "aiohttp==3.14.3",
@@ -254,7 +258,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),  # GHSA-cq5v-8q36-5273 / GHSA-mfx4-hv73-q22v / GHSA-mq44-7p77-q5h7
+    "platform.teams": (
+        "microsoft-teams-apps==2.0.13.4",
+        "msal==1.37.0",  # 1.36 caps cryptography<49
+        "aiohttp==3.14.3",  # GHSA-cq5v-8q36-5273 / GHSA-mfx4-hv73-q22v / GHSA-mq44-7p77-q5h7
+    ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4", "aiohttp==3.14.3"),
@@ -269,9 +277,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "google-auth-httplib2==0.3.1",
         # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
         # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
-        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
+        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale google-auth, and
+        # pyasn1 before the three advisories listed below.
         "httplib2==0.32.0",
-        "pyasn1==0.6.4",
+        "pyasn1==0.6.4",  # GHSA-8ppf-4f7h-5ppj / GHSA-hm4w-wwcw-mr6r / GHSA-m4p7-r5rc-7g4j
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
