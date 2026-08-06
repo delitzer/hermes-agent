@@ -160,8 +160,10 @@ fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead). Edge TTS and Modal use aiohttp;
 # direct pins stop lazy installs retaining a vulnerable satisfying version.
+# Modal also pulls h2 through grpclib; pin h2 at the first release fixing
+# CVE-2026-71554 / GHSA-6hr6-w5qg-qmwg.
 edge-tts = ["edge-tts==7.2.7", "aiohttp==3.14.3"]
-modal = ["modal==1.3.4", "aiohttp==3.14.3"]
+modal = ["modal==1.3.4", "aiohttp==3.14.3", "h2==4.4.1"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
@@ -211,7 +213,9 @@ honcho = ["honcho-ai==2.2.0"]
 # excluded from [all] like honcho/hindsight so a quarantined upstream release
 # can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
-mem0 = ["mem0ai==2.0.10"]
+# mem0ai pulls qdrant-client[http2] -> h2. Pin the patched h2 release here so
+# eager/locked installs cannot retain a vulnerable satisfying transitive.
+mem0 = ["mem0ai==2.0.10", "h2==4.4.1"]  # h2: CVE-2026-71554 / GHSA-6hr6-w5qg-qmwg
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the

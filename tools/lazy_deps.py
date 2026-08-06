@@ -205,7 +205,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ensure() call at the import site, the SDK never installs on a hosted
     # instance and the provider silently reports itself unavailable.
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
+    # mem0ai pulls qdrant-client[http2] -> h2. Keep this direct security pin
+    # aligned with the `mem0` extra so lazy refresh cannot retain <=4.4.0.
+    "memory.mem0": (
+        "mem0ai==2.0.10",
+        "h2==4.4.1",  # CVE-2026-71554 / GHSA-6hr6-w5qg-qmwg
+    ),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
@@ -265,7 +270,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
-    "terminal.modal": ("modal==1.3.4", "aiohttp==3.14.3"),
+    # Modal pulls grpclib -> h2; mirror the `modal` extra's patched h2 pin.
+    "terminal.modal": (
+        "modal==1.3.4",
+        "aiohttp==3.14.3",
+        "h2==4.4.1",  # CVE-2026-71554 / GHSA-6hr6-w5qg-qmwg
+    ),
     "terminal.daytona": ("daytona==0.155.0",),
     "terminal.vercel": ("vercel==0.7.2",),
 
