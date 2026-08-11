@@ -43,6 +43,8 @@ def _write_auth_store(hermes_home: Path, nous_state: Dict[str, Any]) -> Path:
     return auth_path
 
 
+def test_nous_adapter_allows_native_anthropic_messages():
+    assert "/messages" in NousPortalAdapter().allowed_paths
 
 
 def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
@@ -297,6 +299,7 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
             "method": request.method,
             "path": request.path,
             "auth": request.headers.get("Authorization"),
+            "x_api_key": request.headers.get("X-Api-Key"),
             "body": body.decode("utf-8") if body else "",
         })
         return web.json_response({"echoed": True, "path": request.path})
@@ -314,6 +317,7 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
     app = web.Application()
     app.router.add_route("*", "/v1/chat/completions", echo)
     app.router.add_route("*", "/v1/embeddings", echo)
+    app.router.add_route("*", "/v1/messages", echo)
     app.router.add_route("*", "/v1/sse", sse)
     return app
 
@@ -341,23 +345,29 @@ def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application"
 
 
 
-def test_server_strips_client_auth_header():
-    """The client's Authorization header MUST NOT reach the upstream."""
+def test_server_strips_client_auth_headers():
+    """Client Authorization and X-Api-Key headers MUST NOT reach the upstream."""
     async def run():
         captured: Dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
-        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1", bearer="ours", allowed=["/messages"],
+        )
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{proxy_base}/v1/chat/completions",
+                    f"{proxy_base}/v1/messages",
                     json={},
-                    headers={"Authorization": "Bearer SHOULD_NOT_LEAK"},
+                    headers={
+                        "Authorization": "Bearer SHOULD_NOT_LEAK",
+                        "X-Api-Key": "SHOULD_NOT_LEAK_EITHER",
+                    },
                 ) as resp:
                     await resp.read()
             assert captured["requests"][0]["auth"] == "Bearer ours"
             assert "SHOULD_NOT_LEAK" not in captured["requests"][0]["auth"]
+            assert captured["requests"][0]["x_api_key"] is None
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()

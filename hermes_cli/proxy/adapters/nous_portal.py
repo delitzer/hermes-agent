@@ -37,6 +37,7 @@ _ALLOWED_PATHS: FrozenSet[str] = frozenset(
         "/chat/completions",
         "/completions",
         "/embeddings",
+        "/messages",
         "/models",
     }
 )

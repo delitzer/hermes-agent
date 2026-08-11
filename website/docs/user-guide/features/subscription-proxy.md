@@ -1,16 +1,16 @@
 ---
 sidebar_position: 15
 title: "Subscription Proxy"
-description: "Use your Nous Portal subscription (or other OAuth provider) as an OpenAI-compatible endpoint for external apps"
+description: "Use your Nous Portal subscription as an OpenAI-compatible or native Anthropic endpoint for external apps"
 ---
 
 # Subscription Proxy
 
-The subscription proxy is a local HTTP server that lets external apps —
-OpenViking, Karakeep, Open WebUI, anything that speaks OpenAI-compatible
-chat completions — use your Hermes-managed provider subscription as their
-LLM endpoint. The proxy attaches the right credentials (refreshing them
-automatically) so the app never needs a static API key.
+The subscription proxy is a local HTTP server that lets external apps such as
+OpenViking, Karakeep, Open WebUI, and native Anthropic SDK clients use your
+Hermes-managed provider subscription as their LLM endpoint. The proxy attaches
+the right credentials (refreshing them automatically) so the app never needs
+a static API key.
 
 This is different from the [API server](./api-server.md):
 
@@ -62,9 +62,9 @@ API key:    anything (e.g. "sk-unused")
 Model:      Hermes-4-70B    # or Hermes-4.3-36B, Hermes-4-405B
 ```
 
-The proxy ignores the `Authorization` header from your app and attaches
-your real Portal credential to the upstream request. Refreshes happen
-automatically when the bearer approaches expiry.
+The proxy ignores the `Authorization` and `X-Api-Key` headers from your app
+and attaches your real Portal credential to the upstream request. Refreshes
+happen automatically when the bearer approaches expiry.
 
 ## Available providers
 
@@ -103,6 +103,7 @@ Portal:
 | `/v1/chat/completions` | Chat completions (streaming + non-streaming) |
 | `/v1/completions` | Legacy text completions |
 | `/v1/embeddings` | Embeddings |
+| `/v1/messages` | Native Anthropic Messages API |
 | `/v1/models` | Model list |
 
 Other paths (`/v1/images/generations`, `/v1/audio/speech`, etc.) return
@@ -184,9 +185,9 @@ subscription quota. Monitor usage at
 
 The proxy is intentionally minimal. Per request:
 
-1. Receive `POST /v1/chat/completions` from your app
+1. Receive an allowed `/v1/*` request from your app
 2. Look up the adapter's current credential (refresh if expiring)
-3. Forward the request body verbatim, with `Authorization: Bearer <minted-key>`
+3. Forward the request body verbatim with `Authorization: Bearer ***`
 4. Stream the response back unchanged (SSE preserved)
 
 No transformation. No logging of request bodies. No agent loop. The
@@ -194,10 +195,9 @@ proxy is a credential-attaching pass-through.
 
 ## Future: more OAuth providers
 
-The adapter system is pluggable. Adding a new provider (e.g.
-HuggingFace, GitHub Copilot's chat endpoint, Anthropic via OAuth)
-requires implementing `UpstreamAdapter` in
-`hermes_cli/proxy/adapters/<provider>.py` and registering it in
-`adapters/__init__.py`. Providers that aren't OpenAI-compatible at the
-protocol level (Anthropic Messages API, for example) would need a
-transformation layer, which is out of scope for the current shape.
+The adapter system is pluggable. Adding a new provider (for example,
+HuggingFace or GitHub Copilot's chat endpoint) requires implementing
+`UpstreamAdapter` in `hermes_cli/proxy/adapters/<provider>.py` and registering
+it in `adapters/__init__.py`. If an upstream does not natively serve a client's
+protocol, it still needs a transformation layer, which is out of scope for the
+current pass-through design.

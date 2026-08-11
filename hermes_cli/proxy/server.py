@@ -30,7 +30,7 @@ from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 logger = logging.getLogger(__name__)
 
 # Headers we strip when forwarding to the upstream. ``host``/``content-length``
-# are recomputed by aiohttp; ``authorization`` is replaced with our bearer.
+# are recomputed by aiohttp; client auth is replaced with our bearer.
 # Everything else (content-type, accept, user-agent, x-* headers) passes through.
 _HOP_BY_HOP_HEADERS = frozenset(
     {
@@ -45,6 +45,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "transfer-encoding",
         "upgrade",
         "authorization",  # we replace this one
+        "x-api-key",  # native Anthropic clients send this instead of bearer auth
     }
 )
 
