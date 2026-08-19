@@ -88,6 +88,10 @@ jobs:
             --route '${{ inputs.route }}' \
             --install-ref '${{ inputs.install-ref }}'
         env:
+          # Every selected release is already in this fetch-depth:0 checkout.
+          # Resolve it locally instead of making parallel anonymous GitHub
+          # fetches, which can hit repository-level HTTP 429 rate limits.
+          HERMES_DEV_SANDBOX_UPSTREAM: ${{ github.workspace }}
           # Outside the workspace on purpose: the script creates this directory
           # up front, and an untracked dir inside the repo makes the worktree
           # dirty -- which dev-sandbox reacts to by snapshotting the working
