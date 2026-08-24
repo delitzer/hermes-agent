@@ -7,10 +7,10 @@ name: Install & Update E2E
 # scripts/dev-sandbox.sh, then applies one update route and requires the
 # checkout to land on this commit with a working `hermes`.
 #
-# The starting versions are chosen at runtime from the repo's release tags
-# (scripts/sandbox/pick-release-tags.sh): newest, oldest, and a spread between.
-# A hardcoded list would stop covering the newest release the day after it
-# ships, and would pin an "oldest" that nobody still runs.
+# The starting versions are chosen at runtime from the repo's release-tag refs:
+# newest, oldest, and a spread between. A hardcoded list would stop covering the
+# newest release the day after it ships, and would pin an "oldest" that nobody
+# still runs.
 #
 # Triggers:
 #   * every 12 hours, so upstream drift (a new uv, a Node bump, a PyPI change)
@@ -63,35 +63,73 @@ jobs:
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
     steps:
-      # This job only reads tag names and runs one script, so take the cheap
-      # checkout: no blobs (filter), no other files (sparse), but DO fetch tags
-      # -- they are the whole input, and the default shallow checkout has none.
-      # A blobless sparse checkout fetches the selected script lazily. GitHub
-      # can rate-limit that promisor fetch without retrying it, so permit one
-      # clean checkout retry before failing the job.
-      - name: Checkout tag picker
-        id: checkout-picker
-        continue-on-error: true
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # Only tag names are needed here. Query their refs through the authenticated
+      # API instead of creating a partial clone. A blobless sparse checkout must
+      # lazily fetch the picker script through Git's promisor remote, where an
+      # HTTP 429 can hang until the whole job times out. github-script retries
+      # transient API failures and removes that checkout failure mode entirely.
+      - name: Pick release tags
+        id: pick
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          TAG_COUNT: ${{ inputs['tag-count'] || '5' }}
         with:
-          filter: blob:none
-          fetch-tags: true
-          sparse-checkout: scripts/sandbox/pick-release-tags.sh
-          sparse-checkout-cone-mode: false
-      - name: Retry checkout after transient failure
-        if: steps.checkout-picker.outcome == 'failure'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          filter: blob:none
-          fetch-tags: true
-          sparse-checkout: scripts/sandbox/pick-release-tags.sh
-          sparse-checkout-cone-mode: false
-      - id: pick
-        run: |
-          set -euo pipefail
-          tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}')"
-          echo "Testing updates from: $tags"
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          retries: 3
+          retry-exempt-status-codes: 400,401,404,422
+          script: |
+            const refs = await github.paginate(
+              github.rest.git.listMatchingRefs,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: 'tags/v',
+                per_page: 100,
+              },
+            );
+
+            const releasePattern = /^v[0-9]{4}\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$/;
+            const versionParts = (tag) => tag.slice(1).split('.').map(Number);
+            const tags = refs
+              .map(({ ref }) => ref.slice('refs/tags/'.length))
+              .filter((tag) => releasePattern.test(tag))
+              .sort((left, right) => {
+                const a = versionParts(left);
+                const b = versionParts(right);
+                for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+                  const delta = (a[index] || 0) - (b[index] || 0);
+                  if (delta !== 0) return delta;
+                }
+                return 0;
+              });
+
+            const rawCount = process.env.TAG_COUNT || '';
+            if (!/^[1-9][0-9]*$/.test(rawCount)) {
+              core.setFailed(`tag-count must be a positive integer: ${rawCount}`);
+              return;
+            }
+            if (tags.length === 0) {
+              core.setFailed('no release tags found');
+              return;
+            }
+
+            const count = Number(rawCount);
+            let picked;
+            if (tags.length <= count) {
+              picked = tags;
+            } else if (count === 1) {
+              picked = [tags[tags.length - 1]];
+            } else {
+              picked = [];
+              for (let slot = 0; slot < count; slot += 1) {
+                const numerator = slot * (tags.length - 1) * 2 + (count - 1);
+                const denominator = (count - 1) * 2;
+                const candidate = tags[Math.floor(numerator / denominator)];
+                if (!picked.includes(candidate)) picked.push(candidate);
+              }
+            }
+
+            core.info(`Testing updates from: ${JSON.stringify(picked)}`);
+            core.setOutput('tags', JSON.stringify(picked));
 
   # `hermes update` -- the route most users take.
   update:
