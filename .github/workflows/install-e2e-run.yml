@@ -50,11 +50,13 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
-      # Full history: the sandbox fetches the starting commit and the test
-      # compares against this commit, so a shallow clone is not enough.
+      # The sandbox resolves the starting release from this checkout. Fetch all
+      # release tags, but only one commit of branch history: fetching every
+      # branch and commit adds heavy load without changing what the E2E proves.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          fetch-tags: true
 
       # bubblewrap + slirp4netns are what the sandbox is built on; util-linux
       # supplies the `unshare` that builds the multi-uid userns for the
@@ -88,8 +90,8 @@ jobs:
             --route '${{ inputs.route }}' \
             --install-ref '${{ inputs.install-ref }}'
         env:
-          # Every selected release is already in this fetch-depth:0 checkout.
-          # Resolve it locally instead of making parallel anonymous GitHub
+          # Selected release tags are available in this shallow checkout.
+          # Resolve them locally instead of making parallel anonymous GitHub
           # fetches, which can hit repository-level HTTP 429 rate limits.
           HERMES_DEV_SANDBOX_UPSTREAM: ${{ github.workspace }}
           # Outside the workspace on purpose: the script creates this directory

@@ -229,12 +229,16 @@ if [ -n "$INSTALL_REF" ]; then
   # main and resolving the SHA locally (which works for any commit that is an
   # ancestor of main -- the interesting case for "update from N versions ago").
   #
+  # --update-shallow is required when UPSTREAM_URL is a shallow local Actions
+  # checkout. Without it, Git can exit 0 after rejecting the shallow boundary
+  # and leave FETCH_HEAD unset.
+  #
   # Peel to ^{commit} in both cases: an annotated tag fetches as a tag OBJECT,
   # and using it directly fails later with "trying to write non-commit object
   # ... to branch 'refs/heads/main'".
-  if git -C "$UPSTREAM_REPO" fetch -q "$UPSTREAM_URL" "$INSTALL_REF" 2>/dev/null; then
+  if git -C "$UPSTREAM_REPO" fetch -q --update-shallow "$UPSTREAM_URL" "$INSTALL_REF" 2>/dev/null; then
     UPSTREAM_COMMIT="$(git -C "$UPSTREAM_REPO" rev-parse "FETCH_HEAD^{commit}")"
-  elif git -C "$UPSTREAM_REPO" fetch -q "$UPSTREAM_URL" refs/heads/main \
+  elif git -C "$UPSTREAM_REPO" fetch -q --update-shallow "$UPSTREAM_URL" refs/heads/main \
     && UPSTREAM_COMMIT="$(git -C "$UPSTREAM_REPO" rev-parse --verify -q "$INSTALL_REF^{commit}")"; then
     :
   else
@@ -384,14 +388,14 @@ SNAPSHOT_REPO=""
 FAKE_REPO="$SANDBOX_ROOT/root/repos/hermes-agent.git"
 git -C "$SANDBOX_ROOT/root/repos" init --bare -q hermes-agent.git
 if [ -n "$INSTALL_REF" ]; then
-  git --git-dir="$FAKE_REPO" fetch -q --force "$UPSTREAM_REPO" \
+  git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$UPSTREAM_REPO" \
     "$UPSTREAM_COMMIT:refs/heads/main"
 fi
 if [ -n "$(git -C "$GIT_ROOT" status --porcelain)" ]; then
   echo '[sandbox] warning: current folder is dirty; creating a temporary fake commit for main' >&2
   SNAPSHOT_REPO="$(mktemp -d -t hermes-sandbox-snapshot.XXXXXX)"
   git -C "$SNAPSHOT_REPO" init -q
-  git -C "$SNAPSHOT_REPO" fetch -q "$GIT_ROOT" "$COMMIT"
+  git -C "$SNAPSHOT_REPO" fetch -q --update-shallow "$GIT_ROOT" "$COMMIT"
   git -C "$SNAPSHOT_REPO" config user.name 'Hermes sandbox'
   git -C "$SNAPSHOT_REPO" config user.email 'sandbox@invalid'
   GIT_DIR="$SNAPSHOT_REPO/.git" GIT_WORK_TREE="$GIT_ROOT" git read-tree "$COMMIT"
@@ -400,7 +404,7 @@ if [ -n "$(git -C "$GIT_ROOT" status --porcelain)" ]; then
   SNAPSHOT_TREE="$(GIT_DIR="$SNAPSHOT_REPO/.git" git write-tree)"
   SNAPSHOT_PARENT="$COMMIT"
   if EXISTING_MAIN="$(git --git-dir="$FAKE_REPO" rev-parse --verify refs/heads/main 2>/dev/null)"; then
-    git -C "$SNAPSHOT_REPO" fetch -q "$FAKE_REPO" "$EXISTING_MAIN"
+    git -C "$SNAPSHOT_REPO" fetch -q --update-shallow "$FAKE_REPO" "$EXISTING_MAIN"
     SNAPSHOT_PARENT="$EXISTING_MAIN"
   fi
   SOURCE_REF="$(GIT_DIR="$SNAPSHOT_REPO/.git" git commit-tree "$SNAPSHOT_TREE" -p "$SNAPSHOT_PARENT" \
@@ -409,11 +413,11 @@ if [ -n "$(git -C "$GIT_ROOT" status --porcelain)" ]; then
 fi
 
 if [ -n "$INSTALL_REF" ]; then
-  git --git-dir="$FAKE_REPO" fetch -q --force "$SOURCE_REPO" \
+  git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$SOURCE_REPO" \
     "$SOURCE_REF:refs/hermes-sandbox/next"
   printf '%s\n' "$SOURCE_REF" > "$SANDBOX_ROOT/root/promote-main"
 else
-  git --git-dir="$FAKE_REPO" fetch -q --force "$SOURCE_REPO" \
+  git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$SOURCE_REPO" \
     "$SOURCE_REF:refs/heads/main"
 fi
 git --git-dir="$FAKE_REPO" symbolic-ref HEAD refs/heads/main
