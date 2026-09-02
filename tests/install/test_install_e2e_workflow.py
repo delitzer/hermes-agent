@@ -49,6 +49,20 @@ def test_reusable_install_e2e_checkout_keeps_release_tags_available():
     ), "matrix checkout must fetch release tags for the local sandbox upstream"
 
 
+def test_reusable_install_e2e_fails_early_when_install_ref_is_missing():
+    """A missing selected tag must fail before the expensive sandbox setup."""
+    workflow = WORKFLOW.read_text()
+    assert "name: Verify selected install ref" in workflow
+    assert 'git rev-parse --verify "${INSTALL_REF}^{commit}"' in workflow
+    assert "git rev-parse --is-shallow-repository" in workflow
+    assert "git --version" in workflow
+
+
+def test_dev_sandbox_preflights_git_remote_builder():
+    """The extracted remote builder must exist in repo and Nix sandbox modes."""
+    assert "prepare-git-remote.sh" in DEV_SANDBOX.read_text().split("done", 1)[0]
+
+
 def test_dev_sandbox_accepts_shallow_local_upstreams():
     """All local-source fetches must propagate shallow boundaries."""
     local_sources = (

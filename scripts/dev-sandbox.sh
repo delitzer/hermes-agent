@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # script into the store on its own, so it exports DEV_SANDBOX_ASSETS to point
 # here.
 SANDBOX_ASSETS="${DEV_SANDBOX_ASSETS:-$SCRIPT_DIR/sandbox}"
-for asset in proxy.py ssh-shim.sh openssl.cnf stage2-run.sh; do
+for asset in proxy.py ssh-shim.sh openssl.cnf stage2-run.sh prepare-git-remote.sh; do
   [ -f "$SANDBOX_ASSETS/$asset" ] || {
     echo "error: missing sandbox asset: $SANDBOX_ASSETS/$asset" >&2
     exit 1
@@ -382,51 +382,12 @@ fi
 printf 'hosts: files dns\n' > "$SANDBOX_ROOT/etc/nsswitch.conf"
 printf '127.0.0.1 localhost\n' > "$SANDBOX_ROOT/etc/hosts"
 
-SOURCE_REPO="$GIT_ROOT"
-SOURCE_REF="$COMMIT"
-SNAPSHOT_REPO=""
 FAKE_REPO="$SANDBOX_ROOT/root/repos/hermes-agent.git"
 git -C "$SANDBOX_ROOT/root/repos" init --bare -q hermes-agent.git
-if [ -n "$INSTALL_REF" ]; then
-  git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$UPSTREAM_REPO" \
-    "$UPSTREAM_COMMIT:refs/heads/main"
-fi
-if [ -n "$(git -C "$GIT_ROOT" status --porcelain)" ]; then
-  echo '[sandbox] warning: current folder is dirty; creating a temporary fake commit for main' >&2
-  SNAPSHOT_REPO="$(mktemp -d -t hermes-sandbox-snapshot.XXXXXX)"
-  git -C "$SNAPSHOT_REPO" init -q
-  git -C "$SNAPSHOT_REPO" fetch -q --update-shallow "$GIT_ROOT" "$COMMIT"
-  git -C "$SNAPSHOT_REPO" config user.name 'Hermes sandbox'
-  git -C "$SNAPSHOT_REPO" config user.email 'sandbox@invalid'
-  GIT_DIR="$SNAPSHOT_REPO/.git" GIT_WORK_TREE="$GIT_ROOT" git read-tree "$COMMIT"
-  GIT_DIR="$SNAPSHOT_REPO/.git" GIT_WORK_TREE="$GIT_ROOT" \
-    git add -A -- .
-  SNAPSHOT_TREE="$(GIT_DIR="$SNAPSHOT_REPO/.git" git write-tree)"
-  SNAPSHOT_PARENT="$COMMIT"
-  if EXISTING_MAIN="$(git --git-dir="$FAKE_REPO" rev-parse --verify refs/heads/main 2>/dev/null)"; then
-    git -C "$SNAPSHOT_REPO" fetch -q --update-shallow "$FAKE_REPO" "$EXISTING_MAIN"
-    SNAPSHOT_PARENT="$EXISTING_MAIN"
-  fi
-  SOURCE_REF="$(GIT_DIR="$SNAPSHOT_REPO/.git" git commit-tree "$SNAPSHOT_TREE" -p "$SNAPSHOT_PARENT" \
-    -m 'sandbox snapshot of dirty worktree')"
-  SOURCE_REPO="$SNAPSHOT_REPO"
-fi
-
-if [ -n "$INSTALL_REF" ]; then
-  git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$SOURCE_REPO" \
-    "$SOURCE_REF:refs/hermes-sandbox/next"
-  printf '%s\n' "$SOURCE_REF" > "$SANDBOX_ROOT/root/promote-main"
-else
-  git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$SOURCE_REPO" \
-    "$SOURCE_REF:refs/heads/main"
-fi
+SOURCE_REF="$(bash "$SANDBOX_ASSETS/prepare-git-remote.sh" \
+  "$GIT_ROOT" "$COMMIT" "$UPSTREAM_REPO" "$UPSTREAM_COMMIT" "$INSTALL_REF" \
+  "$FAKE_REPO" "$SANDBOX_ROOT/root/promote-main")"
 git --git-dir="$FAKE_REPO" symbolic-ref HEAD refs/heads/main
-if [ -n "$SNAPSHOT_REPO" ]; then
-  # Best-effort: it is a mktemp directory the OS will reap, and failing the whole
-  # run over a leftover object file would be worse than leaking it. Concurrent
-  # git activity in the worktree can still be writing here as we delete.
-  rm -rf -- "$SNAPSHOT_REPO" 2>/dev/null || true
-fi
 if [ -n "$UPSTREAM_REPO" ]; then
   rm -rf -- "$UPSTREAM_REPO"
 fi

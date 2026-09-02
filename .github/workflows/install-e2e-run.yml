@@ -58,6 +58,18 @@ jobs:
           fetch-depth: 1
           fetch-tags: true
 
+      - name: Verify selected install ref
+        env:
+          INSTALL_REF: ${{ inputs.install-ref }}
+        run: |
+          set -euo pipefail
+          git --version
+          git rev-parse --is-shallow-repository
+          git rev-parse --verify "${INSTALL_REF}^{commit}" >/dev/null || {
+            echo "::error::Install ref '$INSTALL_REF' is unavailable after the shallow checkout. Check fetch-tags."
+            exit 1
+          }
+
       # bubblewrap + slirp4netns are what the sandbox is built on; util-linux
       # supplies the `unshare` that builds the multi-uid userns for the
       # user-level (non-root) install.
