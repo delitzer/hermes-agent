@@ -64,6 +64,7 @@ def _prepare(
     release: str,
     fake: Path,
     promote_file: Path,
+    install_ref: str = "v1.0.0",
 ) -> subprocess.CompletedProcess[str]:
     return _run(
         "bash",
@@ -72,7 +73,7 @@ def _prepare(
         source_commit,
         upstream,
         release,
-        "v1.0.0",
+        install_ref,
         fake,
         promote_file,
         check=False,
@@ -127,6 +128,141 @@ def test_shallow_source_publishes_complete_fast_forward_update(tmp_path: Path) -
     assert _sha(installed, "HEAD^{tree}") == _sha(source, "HEAD^{tree}")
 
 
+def test_shallow_source_snapshot_is_stable_across_commit_environments(tmp_path: Path, monkeypatch) -> None:
+    upstream, release, _ = _history(tmp_path)
+    source = tmp_path / "source"
+    _run("git", "clone", "-q", "--depth", "1", "--branch", "main", f"file://{upstream}", source)
+    source_head = _sha(source, "HEAD")
+    fake = _bare_repo(tmp_path / "fake.git")
+    promote_file = tmp_path / "promote-main"
+
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "First author")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "first-author@invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "First committer")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "first-committer@invalid")
+    first = _prepare(
+        source=source,
+        source_commit=source_head,
+        upstream=upstream,
+        release=release,
+        fake=fake,
+        promote_file=promote_file,
+    )
+
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2002-01-01T00:00:00Z")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2002-01-01T00:00:00Z")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Second author")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "second-author@invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Second committer")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "second-committer@invalid")
+    second = _prepare(
+        source=source,
+        source_commit=source_head,
+        upstream=upstream,
+        release=release,
+        fake=fake,
+        promote_file=promote_file,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == first.stdout.strip()
+    assert _sha(fake, "refs/hermes-sandbox/next") == first.stdout.strip()
+
+
+def test_shallow_source_reuses_promoted_target_without_install_ref(tmp_path: Path, monkeypatch) -> None:
+    upstream, release, _ = _history(tmp_path)
+    source = tmp_path / "source"
+    _run("git", "clone", "-q", "--depth", "1", "--branch", "main", f"file://{upstream}", source)
+    source_head = _sha(source, "HEAD")
+    fake = _bare_repo(tmp_path / "fake.git")
+    promote_file = tmp_path / "promote-main"
+
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+    prepared = _prepare(
+        source=source,
+        source_commit=source_head,
+        upstream=upstream,
+        release=release,
+        fake=fake,
+        promote_file=promote_file,
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    target = prepared.stdout.strip()
+    assert promote_file.read_text().strip() == target
+    installed = tmp_path / "installed"
+    _run("git", "clone", "-q", "--branch", "main", f"file://{fake}", installed)
+    _git(fake, "update-ref", "refs/heads/main", target)
+    promote_file.unlink()
+
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2002-01-01T00:00:00Z")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2002-01-01T00:00:00Z")
+    reopened = _prepare(
+        source=source,
+        source_commit=source_head,
+        upstream=upstream,
+        release=release,
+        fake=fake,
+        promote_file=promote_file,
+        install_ref="",
+    )
+
+    assert reopened.returncode == 0, reopened.stderr
+    assert reopened.stdout.strip() == target
+    assert _sha(fake, "refs/heads/main") == target
+    assert not promote_file.exists()
+    _git(installed, "pull", "--ff-only", "origin", "main")
+    assert _sha(installed, "HEAD") == target
+
+
+def test_changed_shallow_source_extends_existing_fake_main(tmp_path: Path) -> None:
+    upstream, release, _ = _history(tmp_path)
+    source = tmp_path / "source"
+    _run("git", "clone", "-q", "--depth", "1", "--branch", "main", f"file://{upstream}", source)
+    source_head = _sha(source, "HEAD")
+    fake = _bare_repo(tmp_path / "fake.git")
+    promote_file = tmp_path / "promote-main"
+
+    prepared = _prepare(
+        source=source,
+        source_commit=source_head,
+        upstream=upstream,
+        release=release,
+        fake=fake,
+        promote_file=promote_file,
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    target = prepared.stdout.strip()
+    installed = tmp_path / "installed"
+    _run("git", "clone", "-q", "--branch", "main", f"file://{fake}", installed)
+    _git(fake, "update-ref", "refs/heads/main", target)
+    promote_file.unlink()
+
+    (source / "tracked.txt").write_text("changed snapshot\n")
+    advanced = _prepare(
+        source=source,
+        source_commit=source_head,
+        upstream=upstream,
+        release=release,
+        fake=fake,
+        promote_file=promote_file,
+        install_ref="",
+    )
+
+    assert advanced.returncode == 0, advanced.stderr
+    advanced_target = advanced.stdout.strip()
+    assert advanced_target != target
+    assert _sha(fake, f"{advanced_target}^") == target
+    assert _sha(fake, "refs/heads/main") == advanced_target
+    assert _git(fake, "show", f"{advanced_target}:tracked.txt").stdout == "changed snapshot\n"
+    _git(fake, "fsck", "--strict")
+    _git(installed, "pull", "--ff-only", "origin", "main")
+    assert _sha(installed, "HEAD") == advanced_target
+
+
 def test_dirty_source_snapshot_keeps_worktree_and_release_parent(tmp_path: Path) -> None:
     source, release, source_head = _history(tmp_path)
     (source / "tracked.txt").write_text("dirty current\n")
@@ -145,6 +281,29 @@ def test_dirty_source_snapshot_keeps_worktree_and_release_parent(tmp_path: Path)
     target = result.stdout.strip()
     assert target != source_head
     assert _sha(fake, f"{target}^") == release
+    assert _git(fake, "show", f"{target}:tracked.txt").stdout == "dirty current\n"
+
+
+def test_dirty_complete_source_without_main_uses_source_parent(tmp_path: Path) -> None:
+    source, release, source_head = _history(tmp_path)
+    (source / "tracked.txt").write_text("dirty current\n")
+    fake = _bare_repo(tmp_path / "fake.git")
+
+    result = _prepare(
+        source=source,
+        source_commit=source_head,
+        upstream=source,
+        release=release,
+        fake=fake,
+        promote_file=tmp_path / "promote-main",
+        install_ref="",
+    )
+
+    assert result.returncode == 0, result.stderr
+    target = result.stdout.strip()
+    assert target != source_head
+    assert _sha(fake, f"{target}^") == source_head
+    assert _sha(fake, "refs/heads/main") == target
     assert _git(fake, "show", f"{target}:tracked.txt").stdout == "dirty current\n"
 
 
