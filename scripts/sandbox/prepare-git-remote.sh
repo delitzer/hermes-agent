@@ -65,6 +65,7 @@ SOURCE_REPO="$SOURCE_ROOT"
 SOURCE_REF="$SOURCE_COMMIT"
 SNAPSHOT_REPO=""
 SNAPSHOT_TREE="$SOURCE_TREE"
+REUSE_PUBLISHED_TARGET=false
 if [ -n "$SNAPSHOT_REASON" ]; then
   echo "[sandbox] publishing synthetic update target: $SNAPSHOT_REASON" >&2
   SNAPSHOT_REPO="$(mktemp -d -t hermes-sandbox-snapshot.XXXXXX)"
@@ -77,19 +78,64 @@ if [ -n "$SNAPSHOT_REASON" ]; then
   GIT_DIR="$SNAPSHOT_REPO/.git" GIT_WORK_TREE="$SOURCE_ROOT" git add -A -- .
   SNAPSHOT_TREE="$(GIT_DIR="$SNAPSHOT_REPO/.git" git write-tree)"
 
-  PARENT_ARGS=()
+  SNAPSHOT_PARENT=""
   if [ -n "$INSTALL_REF" ]; then
-    git -C "$SNAPSHOT_REPO" fetch -q --update-shallow "$FAKE_REPO" "$UPSTREAM_COMMIT"
-    git -C "$SNAPSHOT_REPO" cat-file -e "$UPSTREAM_COMMIT^{commit}" \
-      || fail "synthetic target parent is unavailable: $UPSTREAM_COMMIT"
-    PARENT_ARGS=(-p "$UPSTREAM_COMMIT")
-  elif [ "$SOURCE_IS_SHALLOW" != "true" ]; then
-    PARENT_ARGS=(-p "$SOURCE_COMMIT")
+    SNAPSHOT_PARENT="$UPSTREAM_COMMIT"
+  else
+    EXISTING_MAIN="$(git --git-dir="$FAKE_REPO" rev-parse --verify refs/heads/main 2>/dev/null || true)"
+    if [ -n "$EXISTING_MAIN" ]; then
+      EXISTING_TREE="$(git --git-dir="$FAKE_REPO" rev-parse --verify "$EXISTING_MAIN^{tree}" 2>/dev/null)" \
+        || fail "existing fake main tree is unavailable: $EXISTING_MAIN"
+      if [ "$EXISTING_TREE" = "$SNAPSHOT_TREE" ]; then
+        SOURCE_REF="$EXISTING_MAIN"
+        REUSE_PUBLISHED_TARGET=true
+      else
+        SNAPSHOT_PARENT="$EXISTING_MAIN"
+      fi
+    elif [ "$SOURCE_IS_SHALLOW" != "true" ]; then
+      SNAPSHOT_PARENT="$SOURCE_COMMIT"
+    fi
   fi
 
-  SOURCE_REF="$(GIT_DIR="$SNAPSHOT_REPO/.git" git commit-tree "$SNAPSHOT_TREE" \
-    "${PARENT_ARGS[@]}" -m "sandbox snapshot: $SNAPSHOT_REASON")"
-  SOURCE_REPO="$SNAPSHOT_REPO"
+  if [ "$REUSE_PUBLISHED_TARGET" = false ]; then
+    if [ -n "$SNAPSHOT_PARENT" ]; then
+      if [ "$SNAPSHOT_PARENT" != "$SOURCE_COMMIT" ]; then
+        git -C "$SNAPSHOT_REPO" fetch -q --update-shallow "$FAKE_REPO" "$SNAPSHOT_PARENT"
+      fi
+      git -C "$SNAPSHOT_REPO" cat-file -e "$SNAPSHOT_PARENT^{commit}" \
+        || fail "synthetic target parent is unavailable: $SNAPSHOT_PARENT"
+    fi
+
+    SNAPSHOT_AUTHOR_DATE="$(git -C "$SOURCE_ROOT" show -s --format=%aI "$SOURCE_COMMIT")" \
+      || fail "could not read source author date for $SOURCE_COMMIT"
+    SNAPSHOT_COMMITTER_DATE="$(git -C "$SOURCE_ROOT" show -s --format=%cI "$SOURCE_COMMIT")" \
+      || fail "could not read source committer date for $SOURCE_COMMIT"
+    if [ -n "$SNAPSHOT_PARENT" ]; then
+      SOURCE_REF="$(
+        GIT_AUTHOR_NAME='Hermes sandbox' \
+        GIT_AUTHOR_EMAIL='sandbox@invalid' \
+        GIT_AUTHOR_DATE="$SNAPSHOT_AUTHOR_DATE" \
+        GIT_COMMITTER_NAME='Hermes sandbox' \
+        GIT_COMMITTER_EMAIL='sandbox@invalid' \
+        GIT_COMMITTER_DATE="$SNAPSHOT_COMMITTER_DATE" \
+        GIT_DIR="$SNAPSHOT_REPO/.git" \
+          git commit-tree "$SNAPSHOT_TREE" -p "$SNAPSHOT_PARENT" \
+            -m "sandbox snapshot: $SNAPSHOT_REASON"
+      )"
+    else
+      SOURCE_REF="$(
+        GIT_AUTHOR_NAME='Hermes sandbox' \
+        GIT_AUTHOR_EMAIL='sandbox@invalid' \
+        GIT_AUTHOR_DATE="$SNAPSHOT_AUTHOR_DATE" \
+        GIT_COMMITTER_NAME='Hermes sandbox' \
+        GIT_COMMITTER_EMAIL='sandbox@invalid' \
+        GIT_COMMITTER_DATE="$SNAPSHOT_COMMITTER_DATE" \
+        GIT_DIR="$SNAPSHOT_REPO/.git" \
+          git commit-tree "$SNAPSHOT_TREE" -m "sandbox snapshot: $SNAPSHOT_REASON"
+      )"
+    fi
+    SOURCE_REPO="$SNAPSHOT_REPO"
+  fi
 fi
 
 if [ -n "$INSTALL_REF" ]; then
@@ -98,8 +144,10 @@ else
   TARGET_REF="refs/heads/main"
 fi
 
-git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$SOURCE_REPO" \
-  "+$SOURCE_REF:$TARGET_REF"
+if [ "$REUSE_PUBLISHED_TARGET" = false ]; then
+  git --git-dir="$FAKE_REPO" fetch -q --update-shallow --force "$SOURCE_REPO" \
+    "+$SOURCE_REF:$TARGET_REF"
+fi
 PUBLISHED_TARGET="$(git --git-dir="$FAKE_REPO" rev-parse --verify "$TARGET_REF" 2>/dev/null)" \
   || fail "target fetch did not publish $TARGET_REF"
 [ "$PUBLISHED_TARGET" = "$SOURCE_REF" ] \
