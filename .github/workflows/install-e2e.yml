@@ -22,6 +22,13 @@ name: Install & Update E2E
 # Deliberately NOT on pull_request: a leg takes ~11 minutes of real toolchain
 # installation, and the matrix multiplies that. Updating is release-shaped work,
 # so it is gated on releases and the clock instead.
+#
+# The legs are plain jobs over a local composite action, not a reusable
+# workflow. GitHub fetches a reusable workflow when the run starts, before any
+# job exists, and that fetch fails intermittently: the run shows as failed with
+# zero jobs, no logs, and an empty `referenced_workflows`, on a commit that
+# passes the rest of the time. A local action is read from the job's own
+# checkout instead, so there is nothing left to fetch at startup.
 
 on:
   workflow_dispatch:
@@ -133,30 +140,50 @@ jobs:
 
   # `hermes update` -- the route most users take.
   update:
+    name: update from ${{ matrix.install-ref }}
     if: github.event_name != 'workflow_dispatch' || inputs.route != 'installer'
     needs: pick-releases
+    runs-on: ubuntu-latest
+    # A cold run installs real toolchains twice.
+    timeout-minutes: 45
     strategy:
       # One release breaking is worth knowing about even if another already
       # failed, so let every leg report.
       fail-fast: false
       matrix:
         install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags) }}
-    uses: ./.github/workflows/install-e2e-run.yml
-    with:
-      route: update
-      install-ref: ${{ matrix.install-ref }}
+    steps:
+      # The sandbox resolves the starting release from this checkout. Fetch all
+      # release tags, but only one commit of branch history: fetching every
+      # branch and commit adds heavy load without changing what the E2E proves.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          fetch-tags: true
+      - uses: ./.github/actions/install-e2e-leg
+        with:
+          route: update
+          install-ref: ${{ matrix.install-ref }}
 
   # Re-running the curl one-liner over an existing checkout: autostash + pull
   # rather than the updater's own git handling.
   installer:
+    name: installer from ${{ matrix.install-ref }}
     if: github.event_name != 'workflow_dispatch' || inputs.route != 'update'
     needs: pick-releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
         install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags) }}
-    uses: ./.github/workflows/install-e2e-run.yml
-    with:
-      route: installer
-      install-ref: ${{ matrix.install-ref }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          fetch-tags: true
+      - uses: ./.github/actions/install-e2e-leg
+        with:
+          route: installer
+          install-ref: ${{ matrix.install-ref }}
