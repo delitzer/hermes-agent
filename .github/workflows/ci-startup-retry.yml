@@ -49,9 +49,11 @@ jobs:
     name: Retry CI if it failed to start
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Fork PRs get a read-only GITHUB_TOKEN, so there is nothing this job could
-    # do for them; skip rather than fail.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork != true
+    # PRs from forks get a read-only GITHUB_TOKEN, so there is nothing this job
+    # could do for them; skip rather than fail. Compare repositories rather than
+    # testing ``head.repo.fork``: that flag says whether the head repository is
+    # itself a fork of something, which is true of every branch in this repo.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Look for a CI run that never started
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
