@@ -1,0 +1,163 @@
+name: Retry CI startup failure
+
+# CI (ci.yml) sometimes fails before it starts. GitHub fetches every reusable
+# workflow the orchestrator calls (``uses: ./.github/workflows/...``) when the
+# run is created, and that fetch fails intermittently on GitHub's side. The
+# signature is unmistakable:
+#
+#   * conclusion ``failure`` with ZERO jobs, and therefore no logs;
+#   * ``created_at == updated_at`` -- the run ended the instant it began;
+#   * the run's name is the file path (``.github/workflows/ci.yml``) rather
+#     than the ``name:`` from the YAML;
+#   * ``referenced_workflows`` is empty, where a healthy run lists every
+#     sub-workflow it resolved;
+#   * the check suite is ``rerequestable: false`` -- neither the UI's re-run
+#     button nor the API can retry it.
+#
+# Nothing in this repository runs when that happens, so nothing in ci.yml can
+# recover from it, and ``workflow_run`` never fires for such a run (this repo's
+# ``publish-e2e-evidence.yml`` follows every completed CI run within seconds
+# and has never followed a startup failure). This workflow is triggered by the
+# SAME event as CI, so it runs alongside the run that failed and can look at it.
+#
+#   * push to main: dispatch a fresh CI run (ci.yml has ``workflow_dispatch``
+#     for exactly this). Once only -- if the retry also fails at startup, the
+#     commit stays red and a human looks.
+#   * pull request: only a new pull_request event can start CI with the PR's
+#     merge ref and its PR-only gates intact, and no token here may create one
+#     (a label event would run CI on any label and shadow the real gate with a
+#     skipped one; a dispatch on the branch would skip the PR-only gates; a
+#     close/reopen needs the main-only App credentials). So leave one comment
+#     saying what happened and how to re-trigger.
+#
+# Runs alongside CI on every push and PR update, but it is one API call when
+# CI started normally, which is the case almost every time.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: write # dispatch ci.yml on main
+  contents: read
+  pull-requests: write # one explanatory comment on a PR whose CI never started
+
+jobs:
+  retry:
+    name: Retry CI if it failed to start
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Fork PRs get a read-only GITHUB_TOKEN, so there is nothing this job could
+    # do for them; skip rather than fail.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork != true
+    steps:
+      - name: Look for a CI run that never started
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          CI_WORKFLOW: ci.yml
+          # The CI run for a pull_request event records the PR head, not the
+          # merge commit, as its head_sha.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        with:
+          retries: 3
+          retry-exempt-status-codes: 400,401,403,404,422
+          script: |
+            const workflowId = process.env.CI_WORKFLOW;
+            const headSha = process.env.HEAD_SHA;
+            const event = context.eventName;
+            const { owner, repo } = context.repo;
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            // The CI run and this job come from the same webhook delivery, but
+            // GitHub does not promise which is created first. Give it a minute.
+            let runs = [];
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+              const listed = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflowId,
+                head_sha: headSha,
+                event,
+                per_page: 20,
+              });
+              runs = listed.data.workflow_runs;
+              if (runs.length > 0) break;
+              await sleep(10_000);
+            }
+            if (runs.length === 0) {
+              core.info(`No ${workflowId} run recorded for ${headSha} (${event}); nothing to do.`);
+              return;
+            }
+
+            // Healthy as soon as any run for this commit got past startup: it is
+            // still going, or it finished with jobs (pass or fail on its merits).
+            const startupFailures = [];
+            for (const run of runs) {
+              if (run.status !== 'completed' || run.conclusion !== 'failure') {
+                core.info(`${run.html_url} is ${run.status}/${run.conclusion}; CI started normally.`);
+                return;
+              }
+              const jobs = await github.rest.actions.listJobsForWorkflowRun({
+                owner,
+                repo,
+                run_id: run.id,
+                filter: 'all',
+                per_page: 1,
+              });
+              if (jobs.data.total_count > 0) {
+                core.info(`${run.html_url} ran ${jobs.data.total_count} job(s) and failed on its own merits; not a startup failure.`);
+                return;
+              }
+              startupFailures.push(run);
+            }
+
+            const failed = startupFailures[0];
+            const shortSha = headSha.slice(0, 7);
+            if (startupFailures.length > 1) {
+              core.warning(`CI failed at startup ${startupFailures.length} times for ${shortSha}; it was already retried once, not retrying again.`);
+              return;
+            }
+
+            if (event === 'push') {
+              // Only retry the current tip: a newer push has its own CI run.
+              const branch = context.ref.replace(/^refs\/heads\//, '');
+              const tip = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+              if (tip.data.object.sha !== headSha) {
+                core.info(`${branch} has moved on from ${shortSha}; the newer push has its own CI run.`);
+                return;
+              }
+              await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: workflowId, ref: branch });
+              core.notice(`CI ${failed.html_url} failed at startup with zero jobs; dispatched a fresh CI run on ${branch}.`);
+              return;
+            }
+
+            const prNumber = context.payload.pull_request.number;
+            const marker = `<!-- ci-startup-retry ${headSha} -->`;
+            const existing = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            if (existing.some((comment) => (comment.body || '').includes(marker))) {
+              core.info(`Already commented on #${prNumber} for ${shortSha}.`);
+              return;
+            }
+            const workflowUrl = `${context.serverUrl}/${owner}/${repo}/blob/${context.payload.repository.default_branch}/.github/workflows/ci-startup-retry.yml`;
+            const body = [
+              marker,
+              `**CI never started for ${shortSha}.**`,
+              '',
+              `GitHub failed to fetch this repository's workflow files while creating [the CI run](${failed.html_url}), so it was marked failed with zero jobs before anything in this pull request ran. That is a transient failure on GitHub's side, not a result of the changes here, and GitHub does not allow such a run to be re-run.`,
+              '',
+              'To start CI again, do one of these:',
+              '',
+              '- push another commit to this branch, or',
+              '- close this pull request and reopen it right away (the **Close pull request** button at the bottom, then **Reopen pull request** in the same place).',
+              '',
+              `Why a bot cannot do this for you is explained in [ci-startup-retry.yml](${workflowUrl}).`,
+            ].join('\n');
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            core.notice(`CI ${failed.html_url} failed at startup with zero jobs; commented on #${prNumber} with how to re-trigger it.`);
