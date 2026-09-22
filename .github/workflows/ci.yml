@@ -13,11 +13,24 @@ name: CI
 # SECURITY: this workflow runs PR-controlled actions, workflows, and code.
 # Do not add ``secrets: inherit`` or GitHub App credentials here. Trusted
 # main-only automation uses protected environments in its own workflows.
+#
+# STARTUP FAILURES: every ``uses: ./.github/workflows/...`` below is fetched
+# by GitHub when the run is created, before any job exists, and that fetch
+# fails intermittently. The run then shows as failed with zero jobs, no logs,
+# a name equal to this file's path, and an empty ``referenced_workflows``
+# list, and GitHub marks it non-rerunnable. ``ci-startup-retry.yml`` watches
+# for that signature: on main it dispatches a fresh run here (which is what
+# the ``workflow_dispatch`` trigger is for), on pull requests it comments how
+# to re-trigger, since only a new pull_request event can start CI again.
 
 on:
   pull_request:
   push:
     branches: [main]
+  # Retry path for main only (see STARTUP FAILURES above). A dispatch on any
+  # other ref is failed by ``all-checks-pass``: it would skip every
+  # pull_request-gated job and still report a green gate on that commit.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -270,9 +283,17 @@ jobs:
         id: evaluate
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
           echo "$NEEDS" | python3 -c "
-          import json, sys
+          import json, os, sys
+          if os.environ['EVENT_NAME'] == 'workflow_dispatch' and os.environ['REF'] != 'refs/heads/main':
+              # A dispatch on a branch skips every pull_request-gated job (review
+              # label gate, supply-chain scan, history check) and would still
+              # report this gate green on the branch head. Only main is retried.
+              print('::error::workflow_dispatch is only supported on main; use a pull_request event to check a branch')
+              sys.exit(1)
           needs = json.load(sys.stdin)
           # Emit compact {job_name: result} for the comment assembler.
           compact = {name: info['result'] for name, info in needs.items()}

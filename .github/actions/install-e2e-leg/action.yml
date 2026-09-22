@@ -1,0 +1,117 @@
+name: Install & Update E2E leg
+description: >-
+  Run ONE update route against ONE starting commit, in the dev sandbox, with a
+  real install (uv, a managed Python, Node, the venv) behind it. The caller
+  checks the repo out first (fetch-depth 1, fetch-tags true) and fans this out
+  over the route x release combinations that matter. Each leg is independent:
+  its own sandbox, its own install, nothing rewound or shared.
+
+  A composite action rather than a reusable workflow on purpose. A reusable
+  workflow (`jobs.<id>.uses: ./.github/workflows/...`) is fetched by GitHub
+  when the run STARTS, before any job exists, and that fetch fails
+  intermittently: the run is marked failed with zero jobs, no logs, and an
+  empty `referenced_workflows` list, on a commit that passes the rest of the
+  time. A local action is read from the job's own checkout instead, so there
+  is nothing left to fetch at startup.
+
+inputs:
+  route:
+    description: 'Update path to exercise: update (hermes update) or installer (re-run install.sh).'
+    required: true
+  install-ref:
+    description: 'What to install before updating: a branch, a tag (v2026.7.7), or a SHA reachable from main.'
+    required: false
+    default: refs/heads/main
+
+runs:
+  using: composite
+  steps:
+    - name: Verify selected install ref
+      shell: bash
+      env:
+        INSTALL_REF: ${{ inputs.install-ref }}
+      run: |
+        set -euo pipefail
+        git --version
+        git rev-parse --is-shallow-repository
+        git rev-parse --verify "${INSTALL_REF}^{commit}" >/dev/null || {
+          echo "::error::Install ref '$INSTALL_REF' is unavailable after the shallow checkout. Check fetch-tags."
+          exit 1
+        }
+
+    # bubblewrap + slirp4netns are what the sandbox is built on; util-linux
+    # supplies the `unshare` that builds the multi-uid userns for the
+    # user-level (non-root) install.
+    - name: Install sandbox dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq bubblewrap slirp4netns uidmap util-linux
+
+    # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+    # which is exactly what bwrap needs. Report the state before touching it
+    # so a future runner-image change is visible in the log rather than
+    # silently altering what this job proves.
+    - name: Permit unprivileged user namespaces
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "--- kernel userns settings (before)"
+        sysctl kernel.unprivileged_userns_clone 2>/dev/null || echo "  (sysctl absent)"
+        sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "  (sysctl absent)"
+        if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+        echo "--- subuid/subgid for $(id -un)"
+        grep "^$(id -un):" /etc/subuid /etc/subgid || echo "  (none — sandbox will say so)"
+
+    - name: Run install + update E2E
+      shell: bash
+      env:
+        ROUTE: ${{ inputs.route }}
+        INSTALL_REF: ${{ inputs.install-ref }}
+        # Selected release tags are available in this shallow checkout.
+        # Resolve them locally instead of making parallel anonymous GitHub
+        # fetches, which can hit repository-level HTTP 429 rate limits.
+        HERMES_DEV_SANDBOX_UPSTREAM: ${{ github.workspace }}
+        # Outside the workspace on purpose: the script creates this directory
+        # up front, and an untracked dir inside the repo makes the worktree
+        # dirty -- which dev-sandbox reacts to by snapshotting the working
+        # copy into a fresh fake-main commit on every invocation, moving the
+        # update target mid-run.
+        HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+      run: |
+        set -euo pipefail
+        tests/install/install-update-e2e.sh \
+          --route "$ROUTE" \
+          --install-ref "$INSTALL_REF"
+
+    # Artifact names cannot contain '/', and install-ref may be a full ref
+    # like refs/heads/main. GitHub Actions expressions have no string-replace
+    # function, so build the safe name here. Runs even on failure -- that is
+    # exactly when the logs are wanted.
+    - name: Build artifact name
+      if: ${{ always() }}
+      id: artifact
+      shell: bash
+      env:
+        ROUTE: ${{ inputs.route }}
+        INSTALL_REF: ${{ inputs.install-ref }}
+      run: |
+        set -euo pipefail
+        safe_ref="${INSTALL_REF//\//-}"
+        echo "name=install-e2e-${ROUTE}-${safe_ref}" >> "$GITHUB_OUTPUT"
+
+    # The installer's own transcripts say far more than the assertion that
+    # tripped when a real install breaks.
+    - name: Upload installer logs
+      if: ${{ always() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        # Unique per leg: a matrix over releases runs this action several
+        # times per route, and same-named artifacts collide.
+        name: ${{ steps.artifact.outputs.name }}-${{ github.sha }}
+        path: ${{ runner.temp }}/e2e-logs
+        retention-days: 14
+        if-no-files-found: ignore
